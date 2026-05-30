@@ -1,0 +1,9 @@
+name: "spider-room-3d"
+description: |
+  Build a self-contained browser scene inspired by the supplied image: a friendly animated 3D spider in a warm futuristic room.
+  Requirements:
+   - Use only local HTML, CSS, and JavaScript; no network requests or external assets.
+   - Model the spider from layered 3D DOM shapes with glossy black and gold materials.
+   - Animate the spider with breathing, eye glow, and alternating leg movement.
+   - Create the surrounding room with a window, plants, soft light beams, a circular floor, and a glowing network orb.
+   - Include German UI copy and controls for pausing animation, changing camera view, and toggling the web overlay.
