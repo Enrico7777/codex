@@ -1,1 +1,242 @@
-/**\n * Capacity Management - Ressourcen-Allokation & Wartelisten\n * Verhindert Überlastung der Services und Wohneinheiten\n */\n\nimport { v4 as uuidv4 } from 'uuid';\n\nexport interface ResourceCapacity {\n  resourceId: string;\n  resourceType: 'housing' | 'dining' | 'transport' | 'education' | 'healthcare';\n  maxCapacity: number;\n  currentUsage: number;\n  utilizationPercent: number;\n  availableSlots: number;\n}\n\nexport interface WaitlistEntry {\n  entryId: string;\n  userId: string;\n  resourceType: string;\n  requestedAt: string;\n  priority: 'standard' | 'urgent' | 'special-needs';\n  position: number;\n  estimatedWaitDays: number;\n  status: 'waiting' | 'approved' | 'cancelled' | 'fulfilled';\n}\n\nexport interface AllocationDecision {\n  userId: string;\n  resourceId: string;\n  decision: 'allocated' | 'waitlisted' | 'denied';\n  reason?: string;\n  allocatedUntil?: string;\n}\n\nexport class CapacityManager {\n  private capacities: Map<string, ResourceCapacity> = new Map();\n  private waitlists: Map<string, WaitlistEntry[]> = new Map();\n  private allocations: Map<string, AllocationDecision[]> = new Map();\n\n  /**\n   * Ressource registrieren\n   */\n  registerResource(\n    resourceId: string,\n    resourceType: string,\n    maxCapacity: number\n  ): ResourceCapacity {\n    const capacity: ResourceCapacity = {\n      resourceId,\n      resourceType: resourceType as any,\n      maxCapacity,\n      currentUsage: 0,\n      utilizationPercent: 0,\n      availableSlots: maxCapacity,\n    };\n\n    this.capacities.set(resourceId, capacity);\n    this.waitlists.set(resourceId, []);\n    this.allocations.set(resourceId, []);\n\n    return capacity;\n  }\n\n  /**\n   * Verfügbarkeit prüfen\n   */\n  checkAvailability(resourceId: string): ResourceCapacity | null {\n    return this.capacities.get(resourceId) || null;\n  }\n\n  /**\n   * Ressource allokieren oder auf Waitlist setzen\n   */\n  allocateResource(\n    userId: string,\n    resourceId: string,\n    priority: 'standard' | 'urgent' | 'special-needs' = 'standard'\n  ): AllocationDecision {\n    const capacity = this.capacities.get(resourceId);\n    if (!capacity) {\n      return {\n        userId,\n        resourceId,\n        decision: 'denied',\n        reason: 'Resource not found',\n      };\n    }\n\n    // Check für verfügbare Slots\n    if (capacity.availableSlots > 0) {\n      capacity.currentUsage++;\n      capacity.availableSlots--;\n      capacity.utilizationPercent = (capacity.currentUsage / capacity.maxCapacity) * 100;\n\n      const decision: AllocationDecision = {\n        userId,\n        resourceId,\n        decision: 'allocated',\n        allocatedUntil: new Date(Date.now() + 12 * 30 * 24 * 60 * 60 * 1000).toISOString(),\n      };\n\n      const allocations = this.allocations.get(resourceId) || [];\n      allocations.push(decision);\n      this.allocations.set(resourceId, allocations);\n\n      console.log(`✓ Resource ${resourceId} allocated to ${userId}`);\n      return decision;\n    }\n\n    // Auf Waitlist setzen\n    const waitlists = this.waitlists.get(resourceId) || [];\n    const waitlistEntry: WaitlistEntry = {\n      entryId: uuidv4(),\n      userId,\n      resourceType: capacity.resourceType,\n      requestedAt: new Date().toISOString(),\n      priority,\n      position: waitlists.length + 1,\n      estimatedWaitDays: Math.ceil((waitlists.length + 1) / (capacity.maxCapacity / 30)),\n      status: 'waiting',\n    };\n\n    waitlists.push(waitlistEntry);\n    this.waitlists.set(resourceId, waitlists);\n\n    console.log(\n      `⏳ User ${userId} added to waitlist for ${resourceId} (Position: ${waitlistEntry.position})`\n    );\n\n    return {\n      userId,\n      resourceId,\n      decision: 'waitlisted',\n      reason: `Position ${waitlistEntry.position} - Estimated wait: ${waitlistEntry.estimatedWaitDays} days`,\n    };\n  }\n\n  /**\n   * Ressource freigeben (wenn User auszieht)\n   */\n  releaseResource(userId: string, resourceId: string): boolean {\n    const capacity = this.capacities.get(resourceId);\n    if (!capacity || capacity.currentUsage === 0) {\n      return false;\n    }\n\n    capacity.currentUsage--;\n    capacity.availableSlots++;\n    capacity.utilizationPercent = (capacity.currentUsage / capacity.maxCapacity) * 100;\n\n    // Auto-Promotion von Waitlist\n    this.promoteFromWaitlist(resourceId);\n\n    console.log(`✓ Resource ${resourceId} released by ${userId}`);\n    return true;\n  }\n\n  /**\n   * Nächste Person von Waitlist promoten\n   */\n  private promoteFromWaitlist(resourceId: string): void {\n    const capacity = this.capacities.get(resourceId);\n    const waitlist = this.waitlists.get(resourceId);\n\n    if (!capacity || !waitlist || waitlist.length === 0) {\n      return;\n    }\n\n    // Sortiere nach Priorität + Position\n    const priorityOrder = { 'urgent': 0, 'special-needs': 1, 'standard': 2 };\n    waitlist.sort(\n      (a, b) => priorityOrder[a.priority] - priorityOrder[b.priority] || a.position - b.position\n    );\n\n    const nextEntry = waitlist.shift();\n    if (nextEntry) {\n      nextEntry.status = 'approved';\n      capacity.currentUsage++;\n      capacity.availableSlots--;\n      capacity.utilizationPercent = (capacity.currentUsage / capacity.maxCapacity) * 100;\n\n      console.log(`✓ Promoted ${nextEntry.userId} from waitlist`);\n    }\n  }\n\n  /**\n   * Waitlist-Status abrufen\n   */\n  getWaitlistStatus(resourceId: string): WaitlistEntry[] {\n    return (this.waitlists.get(resourceId) || []).filter((e) => e.status === 'waiting');\n  }\n\n  /**\n   * Alle Kapazitäten übersicht\n   */\n  getCapacityOverview(): {\n    highUtilization: ResourceCapacity[];\n    normalUtilization: ResourceCapacity[];\n    lowUtilization: ResourceCapacity[];\n  } {\n    const all = Array.from(this.capacities.values());\n\n    return {\n      highUtilization: all.filter((c) => c.utilizationPercent >= 80),\n      normalUtilization: all.filter((c) => c.utilizationPercent >= 50 && c.utilizationPercent < 80),\n      lowUtilization: all.filter((c) => c.utilizationPercent < 50),\n    };\n  }\n\n  /**\n   * Ressourcen-Bottleneck identifizieren\n   */\n  identifyBottlenecks(): ResourceCapacity[] {\n    return Array.from(this.capacities.values()).filter(\n      (c) => c.utilizationPercent >= 90 && c.availableSlots <= 5\n    );\n  }\n\n  /**\n   * Service-Level-Vereinbarung prüfen (SLA)\n   */\n  checkSLA(\n    resourceId: string,\n    maxWaitDays: number = 30\n  ): {\n    slaViolations: WaitlistEntry[];\n    violationRate: number;\n  } {\n    const waitlist = this.waitlists.get(resourceId) || [];\n    const violations = waitlist.filter(\n      (e) => e.status === 'waiting' && e.estimatedWaitDays > maxWaitDays\n    );\n\n    return {\n      slaViolations: violations,\n      violationRate: (violations.length / waitlist.length) * 100,\n    };\n  }\n}\n\nexport const capacityManager = new CapacityManager();\n"
+/**
+ * Capacity Management - Ressourcen-Allokation & Wartelisten
+ * Verhindert Überlastung der Services und Wohneinheiten
+ */
+
+import { v4 as uuidv4 } from 'uuid';
+
+export interface ResourceCapacity {
+  resourceId: string;
+  resourceType: 'housing' | 'dining' | 'transport' | 'education' | 'healthcare';
+  maxCapacity: number;
+  currentUsage: number;
+  utilizationPercent: number;
+  availableSlots: number;
+}
+
+export interface WaitlistEntry {
+  entryId: string;
+  userId: string;
+  resourceType: string;
+  requestedAt: string;
+  priority: 'standard' | 'urgent' | 'special-needs';
+  position: number;
+  estimatedWaitDays: number;
+  status: 'waiting' | 'approved' | 'cancelled' | 'fulfilled';
+}
+
+export interface AllocationDecision {
+  userId: string;
+  resourceId: string;
+  decision: 'allocated' | 'waitlisted' | 'denied';
+  reason?: string;
+  allocatedUntil?: string;
+}
+
+export class CapacityManager {
+  private capacities: Map<string, ResourceCapacity> = new Map();
+  private waitlists: Map<string, WaitlistEntry[]> = new Map();
+  private allocations: Map<string, AllocationDecision[]> = new Map();
+
+  /**
+   * Ressource registrieren
+   */
+  registerResource(
+    resourceId: string,
+    resourceType: string,
+    maxCapacity: number
+  ): ResourceCapacity {
+    const capacity: ResourceCapacity = {
+      resourceId,
+      resourceType: resourceType as any,
+      maxCapacity,
+      currentUsage: 0,
+      utilizationPercent: 0,
+      availableSlots: maxCapacity,
+    };
+
+    this.capacities.set(resourceId, capacity);
+    this.waitlists.set(resourceId, []);
+    this.allocations.set(resourceId, []);
+
+    return capacity;
+  }
+
+  /**
+   * Verfügbarkeit prüfen
+   */
+  checkAvailability(resourceId: string): ResourceCapacity | null {
+    return this.capacities.get(resourceId) || null;
+  }
+
+  /**
+   * Ressource allokieren oder auf Waitlist setzen
+   */
+  allocateResource(
+    userId: string,
+    resourceId: string,
+    priority: 'standard' | 'urgent' | 'special-needs' = 'standard'
+  ): AllocationDecision {
+    const capacity = this.capacities.get(resourceId);
+    if (!capacity) {
+      return {
+        userId,
+        resourceId,
+        decision: 'denied',
+        reason: 'Resource not found',
+      };
+    }
+
+    // Check für verfügbare Slots
+    if (capacity.availableSlots > 0) {
+      capacity.currentUsage++;
+      capacity.availableSlots--;
+      capacity.utilizationPercent = (capacity.currentUsage / capacity.maxCapacity) * 100;
+
+      const decision: AllocationDecision = {
+        userId,
+        resourceId,
+        decision: 'allocated',
+        allocatedUntil: new Date(Date.now() + 12 * 30 * 24 * 60 * 60 * 1000).toISOString(),
+      };
+
+      const allocations = this.allocations.get(resourceId) || [];
+      allocations.push(decision);
+      this.allocations.set(resourceId, allocations);
+
+      console.log(`✓ Resource ${resourceId} allocated to ${userId}`);
+      return decision;
+    }
+
+    // Auf Waitlist setzen
+    const waitlists = this.waitlists.get(resourceId) || [];
+    const waitlistEntry: WaitlistEntry = {
+      entryId: uuidv4(),
+      userId,
+      resourceType: capacity.resourceType,
+      requestedAt: new Date().toISOString(),
+      priority,
+      position: waitlists.length + 1,
+      estimatedWaitDays: Math.ceil((waitlists.length + 1) / (capacity.maxCapacity / 30)),
+      status: 'waiting',
+    };
+
+    waitlists.push(waitlistEntry);
+    this.waitlists.set(resourceId, waitlists);
+
+    console.log(
+      `⏳ User ${userId} added to waitlist for ${resourceId} (Position: ${waitlistEntry.position})`
+    );
+
+    return {
+      userId,
+      resourceId,
+      decision: 'waitlisted',
+      reason: `Position ${waitlistEntry.position} - Estimated wait: ${waitlistEntry.estimatedWaitDays} days`,
+    };
+  }
+
+  /**
+   * Ressource freigeben (wenn User auszieht)
+   */
+  releaseResource(userId: string, resourceId: string): boolean {
+    const capacity = this.capacities.get(resourceId);
+    if (!capacity || capacity.currentUsage === 0) {
+      return false;
+    }
+
+    capacity.currentUsage--;
+    capacity.availableSlots++;
+    capacity.utilizationPercent = (capacity.currentUsage / capacity.maxCapacity) * 100;
+
+    // Auto-Promotion von Waitlist
+    this.promoteFromWaitlist(resourceId);
+
+    console.log(`✓ Resource ${resourceId} released by ${userId}`);
+    return true;
+  }
+
+  /**
+   * Nächste Person von Waitlist promoten
+   */
+  private promoteFromWaitlist(resourceId: string): void {
+    const capacity = this.capacities.get(resourceId);
+    const waitlist = this.waitlists.get(resourceId);
+
+    if (!capacity || !waitlist || waitlist.length === 0) {
+      return;
+    }
+
+    // Sortiere nach Priorität + Position
+    const priorityOrder = { 'urgent': 0, 'special-needs': 1, 'standard': 2 };
+    waitlist.sort(
+      (a, b) => priorityOrder[a.priority] - priorityOrder[b.priority] || a.position - b.position
+    );
+
+    const nextEntry = waitlist.shift();
+    if (nextEntry) {
+      nextEntry.status = 'approved';
+      capacity.currentUsage++;
+      capacity.availableSlots--;
+      capacity.utilizationPercent = (capacity.currentUsage / capacity.maxCapacity) * 100;
+
+      console.log(`✓ Promoted ${nextEntry.userId} from waitlist`);
+    }
+  }
+
+  /**
+   * Waitlist-Status abrufen
+   */
+  getWaitlistStatus(resourceId: string): WaitlistEntry[] {
+    return (this.waitlists.get(resourceId) || []).filter((e) => e.status === 'waiting');
+  }
+
+  /**
+   * Alle Kapazitäten übersicht
+   */
+  getCapacityOverview(): {
+    highUtilization: ResourceCapacity[];
+    normalUtilization: ResourceCapacity[];
+    lowUtilization: ResourceCapacity[];
+  } {
+    const all = Array.from(this.capacities.values());
+
+    return {
+      highUtilization: all.filter((c) => c.utilizationPercent >= 80),
+      normalUtilization: all.filter((c) => c.utilizationPercent >= 50 && c.utilizationPercent < 80),
+      lowUtilization: all.filter((c) => c.utilizationPercent < 50),
+    };
+  }
+
+  /**
+   * Ressourcen-Bottleneck identifizieren
+   */
+  identifyBottlenecks(): ResourceCapacity[] {
+    return Array.from(this.capacities.values()).filter(
+      (c) => c.utilizationPercent >= 90 && c.availableSlots <= 5
+    );
+  }
+
+  /**
+   * Service-Level-Vereinbarung prüfen (SLA)
+   */
+  checkSLA(
+    resourceId: string,
+    maxWaitDays: number = 30
+  ): {
+    slaViolations: WaitlistEntry[];
+    violationRate: number;
+  } {
+    const waitlist = this.waitlists.get(resourceId) || [];
+    const violations = waitlist.filter(
+      (e) => e.status === 'waiting' && e.estimatedWaitDays > maxWaitDays
+    );
+
+    return {
+      slaViolations: violations,
+      violationRate: (violations.length / waitlist.length) * 100,
+    };
+  }
+}
+
+export const capacityManager = new CapacityManager();
